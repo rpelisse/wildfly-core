@@ -24,16 +24,19 @@
 package org.wildfly.extension.io;
 
 import static org.jboss.as.controller.descriptions.ModelDescriptionConstants.OP_ADDR;
+import io.undertow.connector.ByteBufferPool;
+import io.undertow.server.XnioByteBufferPool;
 
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
-import org.jboss.as.controller.AbstractAddStepHandler;
 import org.jboss.as.controller.AttributeDefinition;
+import org.jboss.as.controller.ModelOnlyWriteAttributeHandler;
 import org.jboss.as.controller.ModelVersion;
 import org.jboss.as.controller.OperationContext;
 import org.jboss.as.controller.OperationFailedException;
+import org.jboss.as.controller.OperationStepHandler;
 import org.jboss.as.controller.PathAddress;
 import org.jboss.as.controller.PersistentResourceDefinition;
 import org.jboss.as.controller.ReloadRequiredRemoveStepHandler;
@@ -43,91 +46,77 @@ import org.jboss.as.controller.capability.RuntimeCapability;
 import org.jboss.as.controller.operations.validation.IntRangeValidator;
 import org.jboss.as.controller.registry.AttributeAccess;
 import org.jboss.as.controller.registry.ManagementResourceRegistration;
+import org.jboss.as.controller.registry.Resource;
 import org.jboss.dmr.ModelNode;
 import org.jboss.dmr.ModelType;
 import org.jboss.msc.service.Service;
-import org.jboss.msc.service.ServiceController;
 import org.jboss.msc.service.StartContext;
 import org.jboss.msc.service.StartException;
 import org.jboss.msc.service.StopContext;
 import org.jboss.msc.value.InjectedValue;
 import org.xnio.Pool;
 
-import io.undertow.connector.ByteBufferPool;
-import io.undertow.server.XnioByteBufferPool;
-
 /**
  * @author <a href="mailto:tomaz.cerar@redhat.com">Tomaz Cerar</a> (c) 2013 Red Hat Inc.
  */
 class BufferPoolResourceDefinition extends PersistentResourceDefinition {
 
-    static final RuntimeCapability<Void> IO_POOL_RUNTIME_CAPABILITY =
-            RuntimeCapability.Builder.of(IOServices.BUFFER_POOL_CAPABILITY_NAME, true, Pool.class).build();
-    static final RuntimeCapability<Void> IO_BYTE_BUFFER_POOL_RUNTIME_CAPABILITY =
-            RuntimeCapability.Builder.of(IOServices.BYTE_BUFFER_POOL_CAPABILITY_NAME, true, ByteBufferPool.class).build();
+    static final RuntimeCapability<Void> IO_POOL_RUNTIME_CAPABILITY = RuntimeCapability.Builder.of(
+            IOServices.BUFFER_POOL_CAPABILITY_NAME, true, Pool.class).build();
+    static final RuntimeCapability<Void> IO_BYTE_BUFFER_POOL_RUNTIME_CAPABILITY = RuntimeCapability.Builder.of(
+            IOServices.BYTE_BUFFER_POOL_CAPABILITY_NAME, true, ByteBufferPool.class).build();
 
-
-    private static final int defaultBufferSize;
-    private static final int defaultBuffersPerRegion;
-    private static final boolean defaultDirectBuffers;
+    static final ModelNode DEFAULT_BUFFER_SIZE;
+    static final ModelNode DEFAULT_BUFFERS_PER_REGION;
+    static final ModelNode DEFAULT_DIRECT_BUFFERS;
 
     static {
+        int defaultBufferSize;
+        int defaultBuffersPerRegion;
+        boolean defaultDirectBuffers;
+
         long maxMemory = Runtime.getRuntime().maxMemory();
-        //smaller than 64mb of ram we use 512b buffers
+        // smaller than 64mb of ram we use 512b buffers
         if (maxMemory < 64 * 1024 * 1024) {
-            //use 512b buffers
+            // use 512b buffers
             defaultDirectBuffers = false;
             defaultBufferSize = 512;
             defaultBuffersPerRegion = 10;
         } else if (maxMemory < 128 * 1024 * 1024) {
-            //use 1k buffers
+            // use 1k buffers
             defaultDirectBuffers = true;
             defaultBufferSize = 1024;
             defaultBuffersPerRegion = 10;
         } else {
-            //use 16k buffers for best performance
-            //as 16k is generally the max amount of data that can be sent in a single write() call
+            // use 16k buffers for best performance
+            // as 16k is generally the max amount of data that can be sent in a single write() call
             defaultDirectBuffers = true;
             defaultBufferSize = 1024 * 16;
             defaultBuffersPerRegion = 20;
         }
+        DEFAULT_BUFFER_SIZE = new ModelNode(defaultBufferSize);
+        DEFAULT_BUFFERS_PER_REGION = new ModelNode(defaultBuffersPerRegion);
+        DEFAULT_DIRECT_BUFFERS = new ModelNode(defaultDirectBuffers);
     }
 
-    static final SimpleAttributeDefinition BUFFER_SIZE = new SimpleAttributeDefinitionBuilder(Constants.BUFFER_SIZE, ModelType.INT, true)
-            .setFlags(AttributeAccess.Flag.RESTART_ALL_SERVICES)
-            .setAllowExpression(true)
-            .setValidator(new IntRangeValidator(1, true, true))
-            .build();
-    static final SimpleAttributeDefinition BUFFER_PER_SLICE = new SimpleAttributeDefinitionBuilder(Constants.BUFFER_PER_SLICE, ModelType.INT, true)
-            .setFlags(AttributeAccess.Flag.RESTART_ALL_SERVICES)
-            .setAllowExpression(true)
-            .setValidator(new IntRangeValidator(1, true, true))
-            .build();
-    static final SimpleAttributeDefinition DIRECT_BUFFERS = new SimpleAttributeDefinitionBuilder(Constants.DIRECT_BUFFERS, ModelType.BOOLEAN, true)
-            .setFlags(AttributeAccess.Flag.RESTART_ALL_SERVICES)
-            .setAllowExpression(true)
-            .build();
+    static final SimpleAttributeDefinition BUFFER_SIZE = new SimpleAttributeDefinitionBuilder(Constants.BUFFER_SIZE,
+            ModelType.INT, true).setFlags(AttributeAccess.Flag.RESTART_ALL_SERVICES).setAllowExpression(true)
+            .setValidator(new IntRangeValidator(1, true, true)).build();
+    static final SimpleAttributeDefinition BUFFER_PER_SLICE = new SimpleAttributeDefinitionBuilder(Constants.BUFFER_PER_SLICE,
+            ModelType.INT, true).setFlags(AttributeAccess.Flag.RESTART_ALL_SERVICES).setAllowExpression(true)
+            .setValidator(new IntRangeValidator(1, true, true)).build();
+    static final SimpleAttributeDefinition DIRECT_BUFFERS = new SimpleAttributeDefinitionBuilder(Constants.DIRECT_BUFFERS,
+            ModelType.BOOLEAN, true).setFlags(AttributeAccess.Flag.RESTART_ALL_SERVICES).setAllowExpression(true).build();
 
-
-    /*<buffer-pool name="default" buffer-size="1024" buffers-per-slice="1024"/>*/
-
-    static List<SimpleAttributeDefinition> ATTRIBUTES = Arrays.asList(
-            BUFFER_SIZE,
-            BUFFER_PER_SLICE,
-            DIRECT_BUFFERS
-    );
-
+    /* <buffer-pool name="default" buffer-size="1024" buffers-per-slice="1024"/> */
+    static List<SimpleAttributeDefinition> ATTRIBUTES = Arrays.asList(BUFFER_SIZE, BUFFER_PER_SLICE, DIRECT_BUFFERS);
 
     public static final BufferPoolResourceDefinition INSTANCE = new BufferPoolResourceDefinition();
 
-
     private BufferPoolResourceDefinition() {
-        super(new Parameters(IOExtension.BUFFER_POOL_PATH,
-                IOExtension.getResolver(Constants.BUFFER_POOL))
-                .setAddHandler(new BufferPoolAdd())
-                .setRemoveHandler(new ReloadRequiredRemoveStepHandler())
-                .setDeprecatedSince(ModelVersion.create(4))
-        );
+        super(new Parameters(IOExtension.BUFFER_POOL_PATH, IOExtension.getResolver(Constants.BUFFER_POOL))
+                .setAddHandler(new BufferPoolAdd()).setRemoveHandler(new ReloadRequiredRemoveStepHandler())
+                .setDeprecatedSince(ModelVersion.create(4)));
     }
 
     @SuppressWarnings("unchecked")
@@ -142,36 +131,47 @@ class BufferPoolResourceDefinition extends PersistentResourceDefinition {
         resourceRegistration.registerCapability(IO_BYTE_BUFFER_POOL_RUNTIME_CAPABILITY);
     }
 
-    private static class BufferPoolAdd extends AbstractAddStepHandler {
+    @Override
+    public void registerAttributes(ManagementResourceRegistration resourceRegistration) {
+        resourceRegistration.registerReadWriteAttribute(BUFFER_SIZE, new BufferReadAttributeHandler(BUFFER_SIZE,
+                DEFAULT_BUFFER_SIZE), new BufferWriteAttributeHandler(BUFFER_SIZE));
+        resourceRegistration.registerReadWriteAttribute(BUFFER_PER_SLICE, new BufferReadAttributeHandler(BUFFER_PER_SLICE,
+                DEFAULT_BUFFERS_PER_REGION), new BufferWriteAttributeHandler(BUFFER_PER_SLICE));
+        resourceRegistration.registerReadWriteAttribute(DIRECT_BUFFERS, new BufferReadAttributeHandler(DIRECT_BUFFERS,
+                DEFAULT_DIRECT_BUFFERS), new BufferWriteAttributeHandler(DIRECT_BUFFERS));
+    }
 
-        private BufferPoolAdd() {
-            super(BufferPoolResourceDefinition.ATTRIBUTES);
+    private static class BufferReadAttributeHandler implements OperationStepHandler {
+
+        final SimpleAttributeDefinition definition;
+        final ModelNode defaultValue;
+
+        public BufferReadAttributeHandler(SimpleAttributeDefinition definition, ModelNode defaultValue) {
+            this.definition = definition;
+            this.defaultValue = defaultValue;
+        }
+
+        private ModelNode returnDefaultIfNotDefined(ModelNode result) {
+            return result.isDefined() ? result : defaultValue;
         }
 
         @Override
-        protected void performRuntime(OperationContext context, ModelNode operation, ModelNode model) throws OperationFailedException {
-            final PathAddress address = PathAddress.pathAddress(operation.get(OP_ADDR));
-            final String name = address.getLastElement().getValue();
-            final ModelNode bufferSizeModel = BUFFER_SIZE.resolveModelAttribute(context, model);
-            final ModelNode bufferPerSliceModel = BUFFER_PER_SLICE.resolveModelAttribute(context, model);
-            final ModelNode directModel = DIRECT_BUFFERS.resolveModelAttribute(context, model);
+        public void execute(OperationContext context, ModelNode operation) throws OperationFailedException {
+            context.getResult().set(
+                    returnDefaultIfNotDefined(definition.resolveModelAttribute(context, Resource.Tools.readModel(context
+                            .readResourceFromRoot(PathAddress.pathAddress(operation.get(OP_ADDR)))))));
+        }
+    }
 
-            final int bufferSize = bufferSizeModel.isDefined() ? bufferSizeModel.asInt() : defaultBufferSize;
-            final int bufferPerSlice = bufferPerSliceModel.isDefined() ? bufferPerSliceModel.asInt() : defaultBuffersPerRegion;
-            final boolean direct = directModel.isDefined() ? directModel.asBoolean() : defaultDirectBuffers;
+    private static class BufferWriteAttributeHandler extends ModelOnlyWriteAttributeHandler {
+        public BufferWriteAttributeHandler(SimpleAttributeDefinition definition) {
+            super(definition);
+        }
 
-            final BufferPoolService service = new BufferPoolService(bufferSize, bufferPerSlice, direct);
-            context.getCapabilityServiceTarget().addCapability(IO_POOL_RUNTIME_CAPABILITY, service)
-                    .setInitialMode(ServiceController.Mode.ON_DEMAND)
-                    .install();
-
-            ByteBufferPoolService poolService = new ByteBufferPoolService();
-
-            context.getCapabilityServiceTarget().addCapability(IO_BYTE_BUFFER_POOL_RUNTIME_CAPABILITY, poolService)
-                    .addCapabilityRequirement(IO_POOL_RUNTIME_CAPABILITY.getDynamicName(address), Pool.class, poolService.bufferPool)
-                    .setInitialMode(ServiceController.Mode.ON_DEMAND)
-                    .install();
-
+        @Override
+        public void execute(OperationContext context, ModelNode operation) throws OperationFailedException {
+            super.execute(context, operation);
+            context.reloadRequired();
         }
     }
 
