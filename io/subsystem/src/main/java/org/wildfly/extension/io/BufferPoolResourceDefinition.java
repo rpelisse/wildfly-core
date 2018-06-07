@@ -24,6 +24,8 @@
 package org.wildfly.extension.io;
 
 import static org.jboss.as.controller.descriptions.ModelDescriptionConstants.OP_ADDR;
+import io.undertow.connector.ByteBufferPool;
+import io.undertow.server.XnioByteBufferPool;
 
 import java.util.Arrays;
 import java.util.Collection;
@@ -52,9 +54,6 @@ import org.jboss.msc.service.StartException;
 import org.jboss.msc.service.StopContext;
 import org.jboss.msc.value.InjectedValue;
 import org.xnio.Pool;
-
-import io.undertow.connector.ByteBufferPool;
-import io.undertow.server.XnioByteBufferPool;
 
 /**
  * @author <a href="mailto:tomaz.cerar@redhat.com">Tomaz Cerar</a> (c) 2013 Red Hat Inc.
@@ -118,6 +117,7 @@ class BufferPoolResourceDefinition extends PersistentResourceDefinition {
     );
 
 
+
     public static final BufferPoolResourceDefinition INSTANCE = new BufferPoolResourceDefinition();
 
 
@@ -148,6 +148,8 @@ class BufferPoolResourceDefinition extends PersistentResourceDefinition {
             super(BufferPoolResourceDefinition.ATTRIBUTES);
         }
 
+
+
         @Override
         protected void performRuntime(OperationContext context, ModelNode operation, ModelNode model) throws OperationFailedException {
             final PathAddress address = PathAddress.pathAddress(operation.get(OP_ADDR));
@@ -166,12 +168,10 @@ class BufferPoolResourceDefinition extends PersistentResourceDefinition {
                     .install();
 
             ByteBufferPoolService poolService = new ByteBufferPoolService();
-
             context.getCapabilityServiceTarget().addCapability(IO_BYTE_BUFFER_POOL_RUNTIME_CAPABILITY, poolService)
                     .addCapabilityRequirement(IO_POOL_RUNTIME_CAPABILITY.getDynamicName(address), Pool.class, poolService.bufferPool)
                     .setInitialMode(ServiceController.Mode.ON_DEMAND)
                     .install();
-
         }
     }
 

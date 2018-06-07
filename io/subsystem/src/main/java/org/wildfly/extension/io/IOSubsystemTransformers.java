@@ -22,10 +22,12 @@ import org.jboss.as.controller.ModelVersion;
 import org.jboss.as.controller.PathElement;
 import org.jboss.as.controller.transform.ExtensionTransformerRegistration;
 import org.jboss.as.controller.transform.SubsystemTransformerRegistration;
+import org.jboss.as.controller.transform.TransformerRegistry;
 import org.jboss.as.controller.transform.description.AttributeConverter;
 import org.jboss.as.controller.transform.description.ChainedTransformationDescriptionBuilder;
 import org.jboss.as.controller.transform.description.RejectAttributeChecker;
 import org.jboss.as.controller.transform.description.ResourceTransformationDescriptionBuilder;
+import org.jboss.as.controller.transform.description.TransformationDescription;
 import org.jboss.as.controller.transform.description.TransformationDescriptionBuilder;
 
 /**
@@ -65,6 +67,10 @@ public class IOSubsystemTransformers implements ExtensionTransformerRegistration
                         WorkerResourceDefinition.WORKER_TASK_MAX_THREADS
                 )
         ;
+        builder.getAttributeBuilder().addRename("buffers-per-slice", "slices-per-buffer").end();
+        builder.getAttributeBuilder().addRename("buffer-size", "slice-size").end();
+        TransformationDescription.Tools.register(builder.build(),
+                TransformerRegistry.Factory.create().getServerRegistration(ModelVersion.create(2)));
 
 
     }
